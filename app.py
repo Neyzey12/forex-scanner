@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 import io
+import time
 
 import numpy as np
 import pandas as pd
@@ -247,7 +248,7 @@ def analyze(df, p):
                 Setup=", ".join(reasons) if reasons else "—")
 
 # ============================================================
-# Gemini Vision (new google-genai SDK)
+# Gemini Vision (google-genai SDK, model fallback + 503 retry)
 # ============================================================
 
 VISION_PROMPT = """You are an expert forex, metals, and indices technical analyst.
@@ -281,7 +282,6 @@ Rules:
 
 def analyze_chart_image(image: Image.Image) -> dict:
     from google import genai
-    from google.genai import types
 
     api_key = st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else None
     if not api_key:
@@ -289,29 +289,39 @@ def analyze_chart_image(image: Image.Image) -> dict:
 
     client = genai.Client(api_key=api_key)
 
-    # Try modern model names in order; fall back if one isn't available
-    candidates = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
+    candidates = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-001",
+        "gemini-2.0-flash-lite",
+        "gemini-flash-latest",
+        "gemini-1.5-flash-002",
+        "gemini-1.5-flash-8b",
+    ]
     last_err = None
 
     for model_name in candidates:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=[VISION_PROMPT, image],
-            )
-            text = (response.text or "").strip()
-
-            # Strip accidental markdown fences
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.lower().startswith("json"):
-                    text = text[4:]
-            text = text.strip()
-
-            return json.loads(text)
-        except Exception as e:
-            last_err = e
-            continue
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[VISION_PROMPT, image],
+                )
+                text = (response.text or "").strip()
+                if text.startswith("```"):
+                    text = text.split("```")[1]
+                    if text.lower().startswith("json"):
+                        text = text[4:]
+                text = text.strip()
+                return json.loads(text)
+            except Exception as e:
+                last_err = e
+                err_str = str(e)
+                if "503" in err_str or "UNAVAILABLE" in err_str:
+                    time.sleep(2)
+                    continue
+                else:
+                    break
 
     raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
 
