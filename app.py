@@ -247,7 +247,7 @@ def analyze(df, p):
                 Setup=", ".join(reasons) if reasons else "—")
 
 # ============================================================
-# Gemini Vision
+# Gemini Vision (new google-genai SDK)
 # ============================================================
 
 VISION_PROMPT = """You are an expert forex, metals, and indices technical analyst.
@@ -280,26 +280,40 @@ Rules:
 
 
 def analyze_chart_image(image: Image.Image) -> dict:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 
     api_key = st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else None
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not configured in Streamlit secrets.")
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    client = genai.Client(api_key=api_key)
 
-    response = model.generate_content([VISION_PROMPT, image])
-    text = (response.text or "").strip()
+    # Try modern model names in order; fall back if one isn't available
+    candidates = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
+    last_err = None
 
-    # Strip accidental markdown fences
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.lower().startswith("json"):
-            text = text[4:]
-    text = text.strip()
+    for model_name in candidates:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[VISION_PROMPT, image],
+            )
+            text = (response.text or "").strip()
 
-    return json.loads(text)
+            # Strip accidental markdown fences
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.lower().startswith("json"):
+                    text = text[4:]
+            text = text.strip()
+
+            return json.loads(text)
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
 
 
 def render_vision_result(r: dict):
@@ -515,7 +529,7 @@ with tab_scan:
                     st.text(e)
 
 # ============================================================
-# TAB 2 — Chart Vision (AI analysis of uploaded screenshot)
+# TAB 2 — Chart Vision
 # ============================================================
 
 with tab_vision:
@@ -531,7 +545,6 @@ with tab_vision:
     if uploaded is not None:
         try:
             image = Image.open(io.BytesIO(uploaded.getvalue())).convert("RGB")
-            # Downscale very large images to keep the API call fast
             max_w = 1400
             if image.width > max_w:
                 ratio = max_w / image.width
@@ -567,7 +580,7 @@ with tab_vision:
 
 st.markdown(
     '<div style="text-align:center;color:#64748b;font-size:0.7rem;margin-top:1.5rem;">'
-    'Data: Yahoo Finance (delayed) · AI vision: Gemini 1.5 Flash · Educational only · Not financial advice'
+    'Data: Yahoo Finance (delayed) · AI vision: Gemini 2.x · Educational only · Not financial advice'
     '</div>',
     unsafe_allow_html=True,
 )
